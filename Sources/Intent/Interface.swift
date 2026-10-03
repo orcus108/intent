@@ -32,11 +32,12 @@ struct MainView: View {
             .padding(18).background(accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
             if model.phase == .loading { ProgressView(value: model.progress).tint(accent) }
             Picker("View", selection: $tab) {
-                Text("Dictation").tag(0); Text("Setup").tag(1); Text("Experiments").tag(2)
+                Text("Dictation").tag(0); Text("Voice edit").tag(3); Text("Setup").tag(1); Text("Experiments").tag(2)
             }.pickerStyle(.segmented)
             Group {
                 if tab == 0 { dictation }
                 else if tab == 1 { setup }
+                else if tab == 3 { editing }
                 else { experiments }
             }
             Spacer(minLength: 0)
@@ -50,6 +51,7 @@ struct MainView: View {
         .padding(28).frame(minWidth: 620, minHeight: 620)
         .tint(accent)
         .onAppear { if model.phase == .setup { tab = 1 } }
+        .onChange(of: model.editPresentation) { _, _ in tab = 3 }
         .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in model.refreshPermissions() }
     }
 
@@ -76,7 +78,7 @@ struct MainView: View {
                 else { Button("Clear") { model.clearTake() } }
             }
             Toggle("Preview every take before copying", isOn: $model.preview).disabled(model.busy)
-            Text("Whisper supplies punctuation and transcription. Advanced rewrites and spoken editing will be experiments on top of this baseline.")
+            Text("To change existing text, select it in your app, then click the pencil on the floating pill.")
                 .font(.caption).foregroundStyle(.secondary)
             if !model.rawTranscript.isEmpty && model.rawTranscript != model.transcript {
                 DisclosureGroup("Original transcript") { Text(model.rawTranscript).font(.callout).textSelection(.enabled) }
@@ -99,6 +101,16 @@ struct MainView: View {
             Text("Initial setup downloads public model files from Hugging Face. Audio and transcripts are processed locally. The current recording remains on this Mac until copied, inserted, cleared, or replaced by a new take.")
                 .font(.caption).foregroundStyle(.secondary)
             Divider()
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Local text editor").font(.headline)
+                    Text(model.editorStatus).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Check editor") { model.checkEditor() }.disabled(model.busy)
+            }
+            Text("Keep Ollama running with llama3.2 installed. Rewrites run on this Mac; no API key needed.").font(.caption).foregroundStyle(.secondary)
+            Divider()
             Toggle("Show floating pill", isOn: $model.showPill)
             Picker("Shortcut", selection: $model.useControl) {
                 Text("Option + Space").tag(false); Text("Control + Space").tag(true)
@@ -116,6 +128,51 @@ struct MainView: View {
             VStack(alignment: .leading, spacing: 4) { Text(title).font(.headline); Text(detail).font(.caption).foregroundStyle(.secondary) }
             Spacer()
             if !granted { Button("Allow", action: action) }
+        }
+    }
+
+    private var editing: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Select a passage in your app → pencil on the pill → say what to change → stop.")
+                    .font(.callout).foregroundStyle(.secondary)
+                Text("Original").font(.headline)
+                if model.editHasSelection || model.editApplied {
+                    Text(model.editOriginal).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12).background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
+                } else {
+                    TextEditor(text: $model.editOriginal).font(.system(size: 15)).frame(minHeight: 80)
+                        .padding(8).overlay(RoundedRectangle(cornerRadius: 10).stroke(.quaternary)).disabled(model.busy)
+                    Text("Or paste sample text here and type an instruction to explore editing without recording. Copy the result when ready.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Text("Instruction").font(.headline)
+                TextField("Make this shorter, keeping the dates…", text: $model.editInstruction, axis: .vertical)
+                    .textFieldStyle(.roundedBorder).disabled(model.busy)
+                Text("Proposed edit").font(.headline)
+                TextEditor(text: $model.editResult).font(.system(size: 15))
+                    .frame(minHeight: 130).padding(8)
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(.quaternary))
+                    .disabled(model.busy || model.editApplied)
+                HStack {
+                    Button("Apply to selection") { model.applyEdit() }
+                        .buttonStyle(.borderedProminent).disabled(!model.canApplyEdit)
+                    Button("Rewrite") { model.regenerateEdit() }
+                        .disabled(model.busy || model.editOriginal.isEmpty || model.editInstruction.isEmpty || model.editApplied)
+                    if model.canUndoEdit { Button("Undo edit") { model.undoEdit() }.disabled(model.busy) }
+                    Spacer()
+                    if model.phase == .recording { Button("Finish") { model.stop() } }
+                    else if model.phase == .processing { Button("Cancel") { model.cancel() } }
+                    else { Button("Dismiss") { model.cancelEditPreview() }.disabled(model.busy) }
+                }
+                HStack {
+                    Button("Copy edit") { model.copyEdit() }.disabled(model.editResult.isEmpty || model.busy)
+                    Button("Copy original") { model.copyEdit(true) }.disabled(model.editOriginal.isEmpty || model.busy)
+                    if model.canRetry { Button("Retry recording") { model.retry() } }
+                }
+                Text("Apply checks that the original field and selection still match. Undo is available when the app exposes its text and it has not changed since applying.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -150,6 +207,18 @@ struct RecordingView: View {
     var body: some View {
         Group {
             if !recording && !processing {
+                if hovering && model.engineReady && !loading {
+                    HStack(spacing: 0) {
+                        Button { model.start() } label: {
+                            Image(systemName: "mic.fill").frame(width: 26, height: 22)
+                        }.accessibilityLabel("Start dictation").help("Dictate · \(model.shortcut)")
+                        Button { model.startEditing() } label: {
+                            Image(systemName: "pencil").frame(width: 26, height: 22)
+                        }.accessibilityLabel("Edit selected text").help("Select text in your app, then click to speak an edit")
+                    }.font(.system(size: 11)).foregroundStyle(.white.opacity(0.85))
+                        .buttonStyle(.plain).background(.black.opacity(0.85), in: Capsule())
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
                 Button {
                     if model.engineReady && !loading { model.start() } else { model.showWindow?() }
                 } label: {
@@ -166,6 +235,7 @@ struct RecordingView: View {
                 }
                 .buttonStyle(.plain).accessibilityLabel("Start dictation")
                 .help(loading ? "Preparing local voice model" : "Click to dictate · \(model.shortcut)")
+                }
             } else {
                 activePill
             }
@@ -182,7 +252,7 @@ struct RecordingView: View {
         HStack(spacing: 6) {
             if processing {
                 ProgressView().controlSize(.small).tint(.white)
-                Text("Transcribing").font(.system(size: 11, weight: .medium))
+                Text(model.isRewriting ? "Rewriting" : "Transcribing").font(.system(size: 11, weight: .medium))
                 cancelButton
             } else if recording {
                 HStack(spacing: 3) {
@@ -190,7 +260,7 @@ struct RecordingView: View {
                         Capsule().fill(.white.opacity(0.9)).frame(width: 2, height: CGFloat(4 + model.level * Float(8 + (i % 3) * 3)))
                     }
                 }.frame(width: 32, height: 20)
-                Text("Listening").font(.system(size: 11, weight: .medium))
+                Text(model.takeMode == .editing ? "Edit" : "Listening").font(.system(size: 11, weight: .medium))
                 Button { model.stop() } label: {
                     Image(systemName: "stop.fill").font(.system(size: 9)).frame(width: 22, height: 22)
                         .background(.white.opacity(0.15), in: Circle())

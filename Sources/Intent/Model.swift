@@ -5,6 +5,7 @@ import SwiftUI
 @MainActor
 final class DictationModel: ObservableObject {
     enum Phase: String { case setup, loading, ready, recording, processing, failed }
+    enum TakeMode { case dictation, editing }
     @Published var phase: Phase = .setup
     @Published var status = "Download the voice model to get started."
     @Published var progress: Double = 0
@@ -12,6 +13,17 @@ final class DictationModel: ObservableObject {
     @Published var transcript = ""
     @Published var rawTranscript = ""
     @Published var elapsed = ""
+    @Published var takeMode: TakeMode = .dictation
+    @Published var editOriginal = ""
+    @Published var editInstruction = ""
+    @Published var editResult = ""
+    @Published var editPresentation = 0
+    @Published var editHasSelection = false
+    @Published var editApplied = false
+    @Published var isApplyingEdit = false
+    @Published var isRewriting = false
+    @Published var canUndoEdit = false
+    @Published var editorStatus = "Local editing uses Llama 3.2 through Ollama."
     @Published var microphoneAllowed = false
     @Published var accessibilityAllowed = false
     @Published var shortcutAvailable = false
@@ -42,7 +54,11 @@ final class DictationModel: ObservableObject {
     private var takePreview = false
     private var takeClipboard = false
     private var successful = false
-    var busy: Bool { [.loading, .recording, .processing].contains(phase) }
+    private let textEditor: any TextEditing = LocalTextEditor()
+    private var editSelection: SelectedText?
+    private var lastAppliedEdit: AppliedEdit?
+    var busy: Bool { [.loading, .recording, .processing].contains(phase) || isApplyingEdit }
+    var canApplyEdit: Bool { editHasSelection && !editApplied && !editResult.isEmpty && !busy }
     var hasAudio: Bool { audioURL != nil }
     var engineReady: Bool { engine != nil }
     var canRetry: Bool { audioURL != nil && engine != nil && !busy && !successful }
@@ -107,11 +123,22 @@ final class DictationModel: ObservableObject {
         }
     }
 
-    func start() {
+    func start(mode: TakeMode = .dictation) {
         guard !busy else { return }
         guard engine != nil else { status = "Prepare the local voice model in Setup first."; showWindow?(); return }
         refreshPermissions()
         guard microphoneAllowed else { status = "Allow microphone access in setup first."; showWindow?(); return }
+        if mode == .editing {
+            guard let selection = SelectedText.capture() else {
+                status = accessibilityAllowed ? "Select text in an editable field in another app, then click the pill's pencil." : "Allow Accessibility in Setup to read the selected text."
+                showWindow?(); return
+            }
+            guard selection.snapshot.text.count <= 8000 else { status = "Select a shorter passage (up to 8,000 characters)."; showWindow?(); return }
+            editSelection = selection; editOriginal = selection.snapshot.text
+            editInstruction = ""; editResult = ""; editHasSelection = true; editApplied = false
+            lastAppliedEdit = nil; canUndoEdit = false; editPresentation += 1
+        }
+        takeMode = mode
         clearAudio()
         transcript = ""; rawTranscript = ""; elapsed = ""; successful = false
         target = InsertionTarget.capture()
@@ -126,7 +153,8 @@ final class DictationModel: ObservableObject {
             ])
             recording.isMeteringEnabled = true
             guard recording.record() else { throw NSError(domain: "Intent", code: 1, userInfo: [NSLocalizedDescriptionKey: "The microphone could not start recording."]) }
-            recorder = recording; audioURL = url; phase = .recording; status = "Listening… Release to finish."
+            recorder = recording; audioURL = url; phase = .recording
+            status = mode == .editing ? "Say how to change the selection. Click stop when finished." : "Listening… Release to finish."
             meter = Timer.scheduledTimer(withTimeInterval: 0.06, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self, let recorder = self.recorder else { return }
@@ -160,6 +188,19 @@ final class DictationModel: ObservableObject {
                 let result = try await engine.transcribe(audio: audioURL, vocabulary: vocabulary)
                 guard token == run, !Task.isCancelled else { return }
                 rawTranscript = result
+                if takeMode == .editing {
+                    editInstruction = result
+                    guard !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        phase = .ready; status = "No instruction detected. Retry the recording or type your instruction below."; showWindow?(); return
+                    }
+                    isRewriting = true; status = "Rewriting the selection locally…"
+                    defer { isRewriting = false }
+                    let revised = try await textEditor.rewrite(source: editOriginal, instruction: result)
+                    guard token == run, !Task.isCancelled else { return }
+                    editResult = revised; elapsed = String(format: "%.1fs", Date().timeIntervalSince(started))
+                    phase = .ready; status = "Review the proposed edit. The original text is unchanged."
+                    showWindow?(); return
+                }
                 transcript = takeClipboard ? Transcript.expandClipboard(in: rawTranscript, clipboard: clipboardSnapshot) : rawTranscript
                 elapsed = String(format: "%.1fs", Date().timeIntervalSince(started))
                 phase = .ready
@@ -169,7 +210,7 @@ final class DictationModel: ObservableObject {
                 else { status = "Text is ready. Focus changed or this field could not be reached; copy it below."; showWindow?() }
             } catch {
                 guard token == run, !Task.isCancelled else { return }
-                phase = .failed; status = "Transcription failed: \(error.localizedDescription). Your recording is saved for retry."; showWindow?()
+                phase = .failed; status = "\(error.localizedDescription) Your recording is saved for retry."; showWindow?()
             }
         }
     }
@@ -214,5 +255,75 @@ final class DictationModel: ObservableObject {
             do { let data = try Data(contentsOf: audioURL); try data.write(to: destination, options: .atomic) }
             catch { status = "Could not export recording: \(error.localizedDescription)" }
         }
+    }
+
+    func startEditing() { start(mode: .editing) }
+
+    func checkEditor() {
+        editorStatus = "Checking local editor…"
+        Task {
+            do { try await LocalTextEditor().checkModel(); editorStatus = "Local editor ready · Llama 3.2" }
+            catch { editorStatus = "Start Ollama and install llama3.2 if needed. \(error.localizedDescription)" }
+        }
+    }
+
+    func regenerateEdit() {
+        guard !busy else { return }
+        let source = editOriginal, instruction = editInstruction
+        takeMode = .editing; isRewriting = true; phase = .processing; editResult = ""
+        status = "Rewriting the selection locally…"
+        let run = UUID(); token = run
+        task = Task {
+            defer { isRewriting = false; if token != run { phase = .ready; status = "Edit cancelled. Original unchanged." } }
+            do {
+                let result = try await textEditor.rewrite(source: source, instruction: instruction)
+                guard token == run, !Task.isCancelled else { return }
+                editResult = result; phase = .ready; status = "Review the proposed edit. Original unchanged."
+            } catch {
+                guard token == run, !Task.isCancelled else { return }
+                phase = .ready; status = error.localizedDescription
+            }
+        }
+    }
+
+    func applyEdit() {
+        guard canApplyEdit, let selection = editSelection else { return }
+        let replacement = editResult
+        isApplyingEdit = true
+        Task {
+            defer { isApplyingEdit = false }
+            do {
+                lastAppliedEdit = try await selection.apply(replacement)
+                canUndoEdit = lastAppliedEdit?.expectedDocument != nil
+                editApplied = true; clearAudio()
+                status = "Edit applied. Original text preserved below."
+            } catch { status = error.localizedDescription; showWindow?() }
+        }
+    }
+
+    func undoEdit() {
+        guard !busy, let edit = lastAppliedEdit, canUndoEdit else { return }
+        isApplyingEdit = true
+        Task {
+            defer { isApplyingEdit = false }
+            do {
+                try await edit.selection.undo(edit)
+                lastAppliedEdit = nil; canUndoEdit = false; editApplied = false
+                status = "Original text restored."
+            } catch { status = error.localizedDescription; showWindow?() }
+        }
+    }
+
+    func cancelEditPreview() {
+        guard !busy else { return }
+        editSelection = nil; editHasSelection = false; editResult = ""; editInstruction = ""
+        clearAudio(); status = editApplied ? "Preview dismissed. The applied edit remains; original preserved." : "Edit dismissed. Nothing replaced."
+    }
+
+    func copyEdit(_ original: Bool = false) {
+        guard !busy else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(original ? editOriginal : editResult, forType: .string)
+        status = original ? "Original text copied." : "Edited text copied."
     }
 }

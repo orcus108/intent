@@ -5,6 +5,20 @@ import Combine
 @main
 enum Main {
     static func main() {
+        if CommandLine.arguments.count == 4, CommandLine.arguments[1] == "--rewrite" {
+            Task {
+                do {
+                    let source = try String(contentsOfFile: CommandLine.arguments[2], encoding: .utf8)
+                    let instruction = try String(contentsOfFile: CommandLine.arguments[3], encoding: .utf8)
+                    let started = Date()
+                    print(try await LocalTextEditor().rewrite(source: source, instruction: instruction))
+                    fputs(String(format: "Rewrite: %.2fs\n", Date().timeIntervalSince(started)), stderr)
+                    exit(0)
+                } catch { fputs("Rewrite error: \(error.localizedDescription)\n", stderr); exit(1) }
+            }
+            RunLoop.main.run()
+            return
+        }
         if CommandLine.arguments.contains("--check-hotkey") {
             MainActor.assumeIsolated {
                 let app = NSApplication.shared
@@ -78,6 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.addItem(withTitle: "Open Intent", action: #selector(openWindow), keyEquivalent: "")
         menu.addItem(withTitle: "Start / finish recording", action: #selector(toggleRecording), keyEquivalent: "")
+        menu.addItem(withTitle: "Edit selected text", action: #selector(editSelection), keyEquivalent: "")
         menu.addItem(withTitle: "Re-centre pill", action: #selector(recentrePill), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Intent", action: #selector(quit), keyEquivalent: "q")
@@ -147,6 +162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updatePill(phase: model.phase, visible: model.showPill)
     }
     @objc private func toggleRecording() { if model.phase == .recording { model.stop() } else { model.start() } }
+    @objc private func editSelection() { model.startEditing() }
     @objc private func quit() { model.cancel(); NSApp.terminate(nil) }
 }
 

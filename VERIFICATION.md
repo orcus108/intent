@@ -33,11 +33,13 @@ Advanced cleanup, spoken correction and formatting parity with Wispr are not imp
 - Settings changes unregister the previous shortcut before registering the new one. The UI now reports actual shortcut registration status independently of insertion permissions.
 - Physical-key recording and cross-app insertion still need live verification after restoring Accessibility for this rebuilt app.
 
-## Persistent signing setup (pending approval)
+## Stable signing and voice editing update
 
-- Created a dedicated local RSA signing key/certificate and encrypted keychain outside the repository. Restored the original user keychain search list; no login-keychain identity or system trust changes applied.
-- Updated the build script to use this reusable identity, with explicit failure rather than an ad-hoc fallback.
-- macOS currently reports the identity as CSSMERR_TP_NOT_TRUSTED. Signing by name and exact certificate fingerprint fails with “no identity found.”
-- Automatic approval review rejected adding user-level trust for the code-signing policy. The trust command did not execute. User approval is required to finish this route.
-- Certificate identity compatibility across changed builds and retention of actual privacy grants remain unverified.
-- The unsuccessful signing attempt left the packaged app failing signature verification. Automatic review also rejected restoring ad-hoc signing. The package needs the approved stable-signing step before relaunch; no additional trust change or fallback was applied.
+- User explicitly approved code-signing-only certificate trust. The public certificate is visible through the login keychain; its private key remains in the dedicated encrypted keychain. No system roots or website trust changed.
+- Signing temporarily includes the dedicated keychain in the search list and restores the list afterward. The build stages outside iCloud Documents and installs in `~/Applications/Intent.app`, linked from `dist/Intent.app`, avoiding file-provider metadata races.
+- Final release build and deep strict signature verification passed. Different debug/release executables signed with this key satisfy each other's designated requirement (bundle identifier plus certificate leaf hash).
+- Nine tests passed: the existing four transcript tests plus selection/document drift rejection, UTF-16 replacement boundaries, unavailable undo snapshots, Unicode/format preservation, and incomplete/empty/malformed rewrite rejection.
+- Real local rewrite through the production client and installed Llama 3.2 completed in 1.94 seconds on synthetic text. It shortened a scheduling paragraph and retained the name, date, time, two agenda items and budget. This is a single sample, not a quality benchmark.
+- Updated app reached Ready with the registered Control + Space shortcut. Voice edit controls and disabled Apply in text-only mode were inspected through Accessibility. Further UI automation timed out, so the final typed UI submission and live recording/apply/undo were not verified.
+- Microphone and Accessibility were unavailable for the new identity during inspection. Grant them once, then verify retention through a rebuild. Existing user reports confirmed the earlier shortcut worked; they do not establish grants for the new certificate.
+- Remaining live checks: selected text capture without focus stealing; Apply/Undo in a supported editor; refusing selection/document drift; unsupported-editor copying; microphone instruction transcription; actual permission persistence.
