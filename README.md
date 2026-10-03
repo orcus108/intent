@@ -87,3 +87,7 @@ Model files and the most recent unfinished audio take live in `~/Library/Applica
 The current take survives an app restart for recovery. It is removed on successful insertion/copy, Clear, or when a new take replaces it. There is no transcript history database. Quit during model download may leave partial cached files; setup can be retried.
 
 See BUILD_BRIEF.md for the milestone and FRICTION_LOG.md for research notes.
+
+## Continuing development
+
+Start with [STATUS.md](STATUS.md) for the current milestone and handoff. [AGENTS.md](AGENTS.md) contains concise instructions for coding agents. [WORKFLOW.md](WORKFLOW.md) includes reusable prompts, chat boundaries, and the next manual verification checklist. [VERIFICATION.md](VERIFICATION.md) records evidence and unverified behavior; it is not a claim that all acceptance criteria passed.

@@ -1,5 +1,7 @@
 # Verification — 3 October 2026
 
+This is a chronological evidence log. Earlier sections describe earlier builds; the latest implementation evidence is under **Stable signing and voice editing update**. Current remaining work is summarized in STATUS.md, with procedures in WORKFLOW.md. Documentation setup afterward did not repeat runtime tests or change app behavior.
+
 ## Passed
 
 - Debug and release builds on Apple Silicon / macOS 26.5.1, with Swift 6.3.3.

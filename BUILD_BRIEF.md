@@ -1,5 +1,7 @@
 # Voice dictation playground: first build
 
+This is the original product brief and desired acceptance criteria, not a description of everything implemented or verified. For current scope and evidence, see STATUS.md and VERIFICATION.md. The immediate next milestone is checking the existing voice-editing flow before adding features.
+
 ## Purpose
 
 Build a Mac app Vedant can use for everyday dictation, providing a dependable foundation for experiments that reduce the effort between intent and a correct outcome. Reproduce the core Wispr Flow interaction with an independent identity. The first milestone is usable dictation; the larger research question is which context and actions make it materially more useful.
